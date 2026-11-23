@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>LiDAR Радар и 3D Скан</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #000; color: #e2e8f0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+  }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  /* 3D Просмотрщик (после сканирования) */
+  #viewerScreen {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    background: #04070e; z-index: 5;
+  }
+  header {
+    padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    background: rgba(10, 15, 28, 0.95); border-bottom: 1px solid rgba(34, 197, 94, 0.25);
+  }
+  .btn-row { display: flex; align-items: center; gap: 6px; }
+  button {
+    border: 1px solid #334155; background: #111827; color: #f8fafc;
+    border-radius: 10px; padding: 9px 12px; font-size: 13px; font-weight: 600;
+    cursor: pointer; touch-action: manipulation;
+  }
+  button:active { transform: scale(0.96); opacity: 0.85; }
+  .btn-green {
+    background: rgba(16, 185, 129, 0.2); border-color: #10b981; color: #6ee7b7;
+  }
+  .btn-primary {
+    background: #10b981; border-color: #34d399; color: #022c22; font-weight: 700;
+  }
+  .btn-active {
+    background: rgba(34, 197, 94, 0.28) !important;
+    border-color: #4ade80 !important; color: #fff !important;
+  }
+
+  #viewportWrap {
+    position: relative; flex: 1; width: 100%; overflow: hidden; touch-action: none;
+  }
+  #view3DCanvas { width: 100%; height: 100%; display: block; }
+
+  #emptyHint {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    pointer-events: none; color: #64748b; font-size: 14px; text-align: center; padding: 24px;
+  }
+
+  footer {
+    padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    background: rgba(10, 15, 28, 0.95); border-top: 1px solid rgba(34, 197, 94, 0.2);
+  }
+
+  /* Полноэкранный черный LiDAR Радар / ПНВ (без камеры) */
+  #xrOverlay {
+    position: fixed; inset: 0; z-index: 100;
+    display: none; flex-direction: column; justify-content: space-between;
+    background: #000;
+  }
+  body.xr-active #viewerScreen { display: none; }
+  body.xr-active #xrOverlay { display: flex; }
+
+  #lidarCanvas {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    z-index: 101; pointer-events: none;
+  }
+  .xr-top {
+    position: relative; z-index: 102; padding: 14px 12px;
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  }
+  .xr-reticle {
+    position: relative; z-index: 102; align-self: center; pointer-events: none;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+  }
+  .reticle-ring {
+    width: 44px; height: 44px; border-radius: 50%;
+    border: 1.5px solid rgba(74, 222, 128, 0.75);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .reticle-dot { width: 4px; height: 4px; border-radius: 50%; background: #4ade80; }
+  #xrDist {
+    font-size: 13px; font-weight: 700; color: #4ade80;
+    background: rgba(0, 20, 0, 0.8); padding: 2px 8px; border-radius: 6px;
+    border: 1px solid rgba(74, 222, 128, 0.35);
+  }
+  .xr-bottom {
+    position: relative; z-index: 102; padding: 14px 12px 24px;
+    background: linear-gradient(to top, rgba(0,0,0,0.95), transparent);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .range-row {
+    display: flex; align-items: center; gap: 10px; font-size: 12px; color: #86efac;
+  }
+  input[type="range"] {
+    flex: 1; height: 6px; border-radius: 99px; background: #14532d;
+    outline: none; -webkit-appearance: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 20px; height: 20px;
+    border-radius: 50%; background: #4ade80; cursor: pointer;
+  }
+  .xr-actions {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  }
+</style>
+</head>
+<body>
+
+  <!-- 1. Экран 3D-просмотра и экспорта -->
+  <div id="viewerScreen">
+    <header>
+      <div class="btn-row">
+        <button type="button" id="btnStartRadar" class="btn-green">👁 ПНВ Радар</button>
+        <button type="button" id="btnStartScan" class="btn-primary">📡 3D Скан</button>
+      </div>
+      <div class="btn-row">
+        <button type="button" id="btnResetView">🎯</button>
+        <button type="button" id="btnClear">🗑</button>
+      </div>
+    </header>
+
+    <div id="viewportWrap">
+      <canvas id="view3DCanvas"></canvas>
+      <div id="emptyHint">Нажмите «👁 ПНВ Радар» или «📡 3D Скан»<br>(открывать в XRViewer)</div>
+    </div>
+
+    <footer>
+      <div class="btn-row">
+        <button type="button" id="btnStylePts" class="btn-active">Точки</button>
+        <button type="button" id="btnStyleMesh">Сетка</button>
+      </div>
+      <div class="btn-row">
+        <button type="button" id="btnExportOBJ" class="mono">.OBJ</button>
+        <button type="button" id="btnExportPLY" class="mono">.PLY</button>
+      </div>
+    </footer>
+  </div>
+
+  <!-- 2. Полноэкранный LiDAR Радар / ПНВ (черный фон, без камеры) -->
+  <div id="xrOverlay">
+    <canvas id="lidarCanvas"></canvas>
+
+    <div class="xr-top">
+      <div class="btn-row">
+        <button type="button" id="btnModeRadar" class="btn-active">👁 Радар (ПНВ)</button>
+        <button type="button" id="btnModeScan">⏺ 3D Скан</button>
+      </div>
+      <button type="button" id="btnExitXR" style="background:#7f1d1d; border-color:#ef4444;">Готово</button>
+    </div>
+
+    <div class="xr-reticle mono">
+      <div class="reticle-ring"><div class="reticle-dot"></div></div>
+      <div id="xrDist">— м</div>
+    </div>
+
+    <div class="xr-bottom mono">
+      <div class="range-row">
+        <span>Дальность:</span>
+        <input type="range" id="sliderRange" min="0.5" max="5.0" step="0.1" value="3.5">
+        <strong id="rangeVal" style="width:42px; text-align:right;">3.5 м</strong>
+      </div>
+      <div class="xr-actions">
+        <button type="button" id="btnClearXR">🗑 Очистить</button>
+        <button type="button" id="btnToggleCamBg">📷 Фон: Чёрный</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function() {
+  const state = {
+    xrSession: null,
+    xrMode: 'radar', // 'radar' (затухающий ПНВ) | 'scan' (накопление 3D модели)
+    showCameraBg: false,
+    maxRange: 3.5,
+    // Живые точки для ПНВ-радара (с временем жизни)
+    radarPts: [],
+    // Накопленные воксели для 3D-скана
+    voxelMap: new Map(),
+    scanCount: 0,
+    // 3D-просмотрщик
+    viewStyle: 'points', // 'points' | 'mesh'
+    yaw: 0.4,
+    pitch: 0.3,
+    zoom: 2.4
+  };
+
+  const MAX_SCAN = 20000;
+  const sX = new Float32Array(MAX_SCAN);
+  const sY = new Float32Array(MAX_SCAN);
+  const sZ = new Float32Array(MAX_SCAN);
+  const sDist = new Float32Array(MAX_SCAN);
+
+  const lidarCanvas = document.getElementById('lidarCanvas');
+  const lCtx = lidarCanvas.getContext('2d');
+  const viewCanvas = document.getElementById('view3DCanvas');
+  const vCtx = viewCanvas.getContext('2d');
+  const xrDistEl = document.getElementById('xrDist');
+  const emptyHint = document.getElementById('emptyHint');
+
+  // Веер лучей 7x7 для плотного прощупывания пространства перед телефоном
+  const rayFan = [];
+  for (let gy = -3; gy <= 3; gy++) {
+    for (let gx = -3; gx <= 3; gx++) {
+      rayFan.push({ x: gx * 0.11, y: gy * 0.11, isCenter: (gx === 0 && gy === 0) });
+    }
+  }
+  let rayIdx = 0;
+
+  let gl = null;
+  let refSpace = null;
+  let hitSource = null;
+
+  const VOXEL = 0.025; // 2.5 см
+
+  function addHitPoint(hx, hy, hz, dist, now) {
+    if (dist < 0.12 || dist > state.maxRange) return;
+
+    // 1. Всегда добавляем в живой буфер ПНВ-радара
+    state.radarPts.push({ x: hx, y: hy, z: hz, d: dist, t: now });
+    if (state.radarPts.length > 500) state.radarPts.shift();
+
+    // 2. Если активен режим 3D Скан — сохраняем в воксели
+    if (state.xrMode === 'scan' && state.scanCount < MAX_SCAN) {
+      const vx = Math.floor(hx / VOXEL);
+      const vy = Math.floor(hy / VOXEL);
+      const vz = Math.floor(hz / VOXEL);
+      const key = vx + ',' + vy + ',' + vz;
+      if (!state.voxelMap.has(key)) {
+        const id = state.scanCount++;
+        state.voxelMap.set(key, id);
+        sX[id] = hx; sY[id] = hy; sZ[id] = hz; sDist[id] = dist;
+      }
+    }
+  }
+
+  async function startXR(mode) {
+    if (!navigator.xr) {
+      alert('WebXR не найден. Откройте страницу в XRViewer на iPhone.');
+      return;
+    }
+    state.xrMode = mode;
+    updateModeButtons();
+
+    try {
+      let session;
+      try {
+        session = await navigator.xr.requestSession('immersive-ar', {
+          optionalFeatures: ['hit-test', 'dom-overlay'],
+          domOverlay: { root: document.getElementById('xrOverlay') }
+        });
+      } catch {
+        session = await navigator.xr.requestSession('immersive-ar', {
+          optionalFeatures: ['hit-test']
+        });
+      }
+
+      state.xrSession = session;
+      document.body.classList.add('xr-active');
+      applyBgMode();
+
+      const glCanvas = document.createElement('canvas');
+      gl = glCanvas.getContext('webgl', { xrCompatible: true, alpha: true });
+      if (typeof XRWebGLLayer !== 'undefined') {
+        session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+      }
+
+      refSpace = await session.requestReferenceSpace('local')
+        .catch(() => session.requestReferenceSpace('viewer'));
+
+      const viewerSpace = await session.requestReferenceSpace('viewer').catch(() => null);
+      if (viewerSpace && session.requestHitTestSource) {
+        hitSource = await session.requestHitTestSource({ space: viewerSpace }).catch(() => null);
+      }
+
+      session.addEventListener('end', () => {
+        state.xrSession = null;
+        hitSource = null;
+        document.body.classList.remove('xr-active');
+        if (state.scanCount > 0) {
+          centerScanPoints();
+          emptyHint.style.display = 'none';
+        }
+      });
+
+      session.requestAnimationFrame(onXRFrame);
+    } catch (e) {
+      alert('Ошибка запуска AR: ' + e.message);
+    }
+  }
+
+  function onXRFrame(now, frame) {
+    const session = state.xrSession;
+    if (!session) return;
+    session.requestAnimationFrame(onXRFrame);
+
+    // Заливаем WebGL черным (без камеры) или прозрачным (с камерой)
+    if (gl && session.renderState.baseLayer) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer);
+      gl.clearColor(0, 0, 0, state.showCameraBg ? 0 : 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    }
+
+    const pose = frame.getViewerPose(refSpace);
+    if (!pose) return;
+
+    const cam = pose.transform.position;
+    const view = pose.views[0];
+    if (!view) return;
+
+    // 1. Стандартный Hit-Test по центру
+    if (hitSource) {
+      const res = frame.getHitTestResults(hitSource);
+      if (res.length > 0) {
+        const p = res[0].getPose(refSpace).transform.position;
+        const d = Math.hypot(p.x - cam.x, p.y - cam.y, p.z - cam.z);
+        xrDistEl.textContent = d.toFixed(2) + ' м';
+        addHitPoint(p.x, p.y, p.z, d, now);
+      }
+    }
+
+    // 2. Веер из 6 лучей за кадр через рабочий XRViewer requestHitTest
+    if (typeof session.requestHitTest === 'function') {
+      const m = view.transform.matrix;
+      const origin = new Float32Array([cam.x, cam.y, cam.z]);
+
+      for (let k = 0; k < 6; k++) {
+        const ray = rayFan[rayIdx % rayFan.length];
+        rayIdx++;
+
+        const wx = m[0] * ray.x + m[4] * ray.y - m[8];
+        const wy = m[1] * ray.x + m[5] * ray.y - m[9];
+        const wz = m[2] * ray.x + m[6] * ray.y - m[10];
+        const len = Math.hypot(wx, wy, wz) || 1;
+        const dir = new Float32Array([wx / len, wy / len, wz / len]);
+
+        session.requestHitTest(origin, dir, refSpace).then(hits => {
+          if (hits && hits.length > 0 && hits[0].hitMatrix) {
+            const hm = hits[0].hitMatrix;
+            const hx = hm[12], hy = hm[13], hz = hm[14];
+            const d = Math.hypot(hx - cam.x, hy - cam.y, hz - cam.z);
+            if (ray.isCenter) xrDistEl.textContent = d.toFixed(2) + ' м';
+            addHitPoint(hx, hy, hz, d, performance.now());
+          }
+        }).catch(() => {});
+      }
+    }
+
+    // 3. Отрисовка 3D-точек в реальном времени поверх черного экрана
+    renderLidarHUD(view.transform.inverse.matrix, view.projectionMatrix, now);
+  }
+
+  function renderLidarHUD(viewMat, projMat, now) {
+    const w = window.innerWidth, h = window.innerHeight;
+    if (lidarCanvas.width !== w || lidarCanvas.height !== h) {
+      lidarCanvas.width = w; lidarCanvas.height = h;
+    }
+    lCtx.clearRect(0, 0, w, h);
+
+    if (state.xrMode === 'radar') {
+      // Режим ПНВ-радара: рисуем живые точки с затуханием 3.5 сек, ближе = ярче и крупнее
+      const pts = state.radarPts;
+      const screenPts = [];
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        const age = now - p.t;
+        if (age > 3500) continue;
+
+        const vx = viewMat[0] * p.x + viewMat[4] * p.y + viewMat[8] * p.z + viewMat[12];
+        const vy = viewMat[1] * p.x + viewMat[5] * p.y + viewMat[9] * p.z + viewMat[13];
+        const vz = viewMat[2] * p.x + viewMat[6] * p.y + viewMat[10] * p.z + viewMat[14];
+
+        if (vz < -0.08) {
+          const sx = ((projMat[0] * vx + projMat[8] * vz) / (-vz) * 0.5 + 0.5) * w;
+          const sy = (1.0 - ((projMat[5] * vy + projMat[9] * vz) / (-vz) * 0.5 + 0.5)) * h;
+          if (sx >= 0 && sx <= w && sy >= 0 && sy <= h) {
+            const life = 1 - age / 3500;
+            const near = Math.max(0.15, 1 - p.d / state.maxRange);
+            screenPts.push({ sx, sy, d: p.d, life, near });
+          }
+        }
+      }
+
+      // Соединяем близкие точки одной поверхности в контурную сетку
+      lCtx.lineWidth = 1;
+      for (let i = 0; i < screenPts.length; i++) {
+        const a = screenPts[i];
+        for (let j = i + 1; j < Math.min(screenPts.length, i + 10); j++) {
+          const b = screenPts[j];
+          const ds = (a.sx - b.sx) * (a.sx - b.sx) + (a.sy - b.sy) * (a.sy - b.sy);
+          if (ds < 5000 && Math.abs(a.d - b.d) < 0.22) {
+            lCtx.strokeStyle = 'rgba(74, 222, 128,' + (a.life * a.near * 0.55).toFixed(2) + ')';
+            lCtx.beginPath();
+            lCtx.moveTo(a.sx, a.sy);
+            lCtx.lineTo(b.sx, b.sy);
+            lCtx.stroke();
+          }
+        }
+        const sz = 2.5 + a.near * 4.5;
+        const g = Math.round(120 + a.near * 135);
+        lCtx.fillStyle = 'rgba(40,' + g + ',90,' + (a.life * 0.95).toFixed(2) + ')';
+        lCtx.fillRect(a.sx - sz * 0.5, a.sy - sz * 0.5, sz, sz);
+      }
+    } else {
+      // Режим 3D-скана: показываем все накопленные воксели
+      for (let i = 0; i < state.scanCount; i++) {
+        const vx = viewMat[0] * sX[i] + viewMat[4] * sY[i] + viewMat[8] * sZ[i] + viewMat[12];
+        const vy = viewMat[1] * sX[i] + viewMat[5] * sY[i] + viewMat[9] * sZ[i] + viewMat[13];
+        const vz = viewMat[2] * sX[i] + viewMat[6] * sY[i] + viewMat[10] * sZ[i] + viewMat[14];
+        if (vz < -0.08) {
+          const sx = ((projMat[0] * vx + projMat[8] * vz) / (-vz) * 0.5 + 0.5) * w;
+          const sy = (1.0 - ((projMat[5] * vy + projMat[9] * vz) / (-vz) * 0.5 + 0.5)) * h;
+          if (sx >= 0 && sx <= w && sy >= 0 && sy <= h) {
+            const near = Math.max(0.2, 1 - sDist[i] / state.maxRange);
+            lCtx.fillStyle = 'rgba(0,' + Math.round(140 + near * 115) + ',212,0.9)';
+            lCtx.fillRect(sx - 2, sy - 2, 4, 4);
+          }
+        }
+      }
+    }
+  }
+
+  function centerScanPoints() {
+    const n = state.scanCount;
+    if (n === 0) return;
+    let cx = 0, cy = 0, cz = 0;
+    for (let i = 0; i < n; i++) { cx += sX[i]; cy += sY[i]; cz += sZ[i]; }
+    cx /= n; cy /= n; cz /= n;
+    for (let i = 0; i < n; i++) { sX[i] -= cx; sY[i] -= cy; sZ[i] -= cz; }
+  }
+
+  // 3D-просмотрщик собранной модели
+  const pX = new Float32Array(MAX_SCAN);
+  const pY = new Float32Array(MAX_SCAN);
+
+  function renderViewer() {
+    requestAnimationFrame(renderViewer);
+    if (state.xrSession) return;
+
+    const wrap = document.getElementById('viewportWrap');
+    const w = wrap.clientWidth || 360, h = wrap.clientHeight || 500;
+    if (viewCanvas.width !== w || viewCanvas.height !== h) {
+      viewCanvas.width = w; viewCanvas.height = h;
+    }
+
+    vCtx.fillStyle = '#04070e';
+    vCtx.fillRect(0, 0, w, h);
+
+    const n = state.scanCount;
+    if (n === 0) return;
+
+    const cosY = Math.cos(state.yaw), sinY = Math.sin(state.yaw);
+    const cosX = Math.cos(state.pitch), sinX = Math.sin(state.pitch);
+    const fov = Math.min(w, h) * 0.9;
+
+    for (let i = 0; i < n; i++) {
+      const rx = sX[i] * cosY + sZ[i] * sinY;
+      const rz = -sX[i] * sinY + sZ[i] * cosY;
+      const ry = sY[i] * cosX - rz * sinX;
+      const fz = sY[i] * sinX + rz * cosX + state.zoom;
+      if (fz > 0.1) {
+        pX[i] = w * 0.5 + (rx / fz) * fov;
+        pY[i] = h * 0.5 - (ry / fz) * fov;
+      } else {
+        pX[i] = -9999;
+      }
+    }
+
+    if (state.viewStyle === 'mesh') {
+      vCtx.strokeStyle = 'rgba(0, 245, 212, 0.35)';
+      vCtx.lineWidth = 0.8;
+      for (let i = 1; i < n; i++) {
+        if (pX[i] > -900 && pX[i - 1] > -900) {
+          const dx = sX[i] - sX[i - 1], dy = sY[i] - sY[i - 1], dz = sZ[i] - sZ[i - 1];
+          if (dx * dx + dy * dy + dz * dz < 0.01) {
+            vCtx.beginPath();
+            vCtx.moveTo(pX[i - 1], pY[i - 1]);
+            vCtx.lineTo(pX[i], pY[i]);
+            vCtx.stroke();
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < n; i++) {
+      if (pX[i] >= 0 && pX[i] <= w && pY[i] >= 0 && pY[i] <= h) {
+        const near = Math.max(0.2, 1 - sDist[i] / state.maxRange);
+        vCtx.fillStyle = 'rgb(20,' + Math.round(130 + near * 125) + ',200)';
+        vCtx.fillRect(pX[i] - 1.5, pY[i] - 1.5, 3, 3);
+      }
+    }
+  }
+  requestAnimationFrame(renderViewer);
+
+  // Вращение модели пальцем
+  let drag = false, lx = 0, ly = 0;
+  const wrap = document.getElementById('viewportWrap');
+  wrap.addEventListener('pointerdown', e => { drag = true; lx = e.clientX; ly = e.clientY; });
+  window.addEventListener('pointermove', e => {
+    if (!drag) return;
+    state.yaw += (e.clientX - lx) * 0.008;
+    state.pitch = Math.max(-1.4, Math.min(1.4, state.pitch + (e.clientY - ly) * 0.008));
+    lx = e.clientX; ly = e.clientY;
+  });
+  window.addEventListener('pointerup', () => { drag = false; });
+
+  // Вспомогательные функции UI
+  function updateModeButtons() {
+    document.getElementById('btnModeRadar').classList.toggle('btn-active', state.xrMode === 'radar');
+    document.getElementById('btnModeScan').classList.toggle('btn-active', state.xrMode === 'scan');
+  }
+
+  function applyBgMode() {
+    const ov = document.getElementById('xrOverlay');
+    const btn = document.getElementById('btnToggleCamBg');
+    ov.style.background = state.showCameraBg ? 'transparent' : '#000';
+    btn.textContent = state.showCameraBg ? '📷 Фон: Камера' : '📷 Фон: Чёрный';
+  }
+
+  // Экспорт
+  const NL = String.fromCharCode(10);
+  function download(text, name) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+    a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  }
+
+  document.getElementById('btnExportOBJ').onclick = () => {
+    if (state.scanCount === 0) return;
+    const lines = ['# LiDAR Scan'];
+    for (let i = 0; i < state.scanCount; i++) {
+      lines.push('v ' + sX[i].toFixed(4) + ' ' + sY[i].toFixed(4) + ' ' + sZ[i].toFixed(4));
+    }
+    download(lines.join(NL), 'lidar-scan-' + Date.now() + '.obj');
+  };
+
+  document.getElementById('btnExportPLY').onclick = () => {
+    if (state.scanCount === 0) return;
+    const lines = [
+      'ply', 'format ascii 1.0', 'element vertex ' + state.scanCount,
+      'property float x', 'property float y', 'property float z', 'end_header'
+    ];
+    for (let i = 0; i < state.scanCount; i++) {
+      lines.push(sX[i].toFixed(4) + ' ' + sY[i].toFixed(4) + ' ' + sZ[i].toFixed(4));
+    }
+    download(lines.join(NL), 'lidar-cloud-' + Date.now() + '.ply');
+  };
+
+  // Кнопки
+  document.getElementById('btnStartRadar').onclick = () => startXR('radar');
+  document.getElementById('btnStartScan').onclick = () => startXR('scan');
+  document.getElementById('btnModeRadar').onclick = () => { state.xrMode = 'radar'; updateModeButtons(); };
+  document.getElementById('btnModeScan').onclick = () => { state.xrMode = 'scan'; updateModeButtons(); };
+  document.getElementById('btnExitXR').onclick = () => { if (state.xrSession) state.xrSession.end(); };
+
+  document.getElementById('btnToggleCamBg').onclick = () => {
+    state.showCameraBg = !state.showCameraBg;
+    applyBgMode();
+  };
+
+  document.getElementById('btnClearXR').onclick = () => {
+    state.radarPts = [];
+    state.voxelMap.clear();
+    state.scanCount = 0;
+  };
+
+  document.getElementById('btnClear').onclick = () => {
+    state.radarPts = [];
+    state.voxelMap.clear();
+    state.scanCount = 0;
+    emptyHint.style.display = 'flex';
+  };
+
+  document.getElementById('btnResetView').onclick = () => {
+    state.yaw = 0.4; state.pitch = 0.3; state.zoom = 2.4;
+  };
+
+  document.getElementById('btnStylePts').onclick = () => {
+    state.viewStyle = 'points';
+    document.getElementById('btnStylePts').classList.add('btn-active');
+    document.getElementById('btnStyleMesh').classList.remove('btn-active');
+  };
+
+  document.getElementById('btnStyleMesh').onclick = () => {
+    state.viewStyle = 'mesh';
+    document.getElementById('btnStyleMesh').classList.add('btn-active');
+    document.getElementById('btnStylePts').classList.remove('btn-active');
+  };
+
+  document.getElementById('sliderRange').oninput = e => {
+    state.maxRange = parseFloat(e.target.value);
+    document.getElementById('rangeVal').textContent = state.maxRange.toFixed(1) + ' м';
+  };
+})();
+</script>
+</body>
+</html>
