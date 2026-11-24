@@ -1,0 +1,1180 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>LiDAR Рулетка, ПНВ и 3D Скан</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #000; color: #e2e8f0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+  }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  #xrGlCanvas {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    z-index: 90; display: none; background: #000;
+  }
+  #ruler2DCanvas {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    z-index: 95; display: none; pointer-events: none;
+  }
+
+  body.xr-active #viewerScreen { display: none; }
+  body.xr-active #xrGlCanvas { display: block; }
+  body.xr-mode-scan #xrOverlay { display: flex; }
+  body.xr-mode-ruler #rulerOverlay { display: flex; }
+  body.xr-mode-ruler #ruler2DCanvas { display: block; }
+
+  /* 1. Главный экран (3D просмотрщик) */
+  #viewerScreen {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    background: #03060c; z-index: 5;
+  }
+  header {
+    padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; gap: 6px;
+    background: #080d18; border-bottom: 1px solid rgba(34, 197, 94, 0.25);
+  }
+  .btn-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  button {
+    border: 1px solid #334155; background: #111827; color: #f8fafc;
+    border-radius: 10px; padding: 8px 11px; font-size: 12px; font-weight: 600;
+    cursor: pointer; touch-action: manipulation;
+  }
+  button:active { transform: scale(0.95); opacity: 0.85; }
+  .btn-ruler { background: #f59e0b; border-color: #fbbf24; color: #1c1917; font-weight: 700; }
+  .btn-primary { background: #10b981; border-color: #34d399; color: #022c22; font-weight: 700; }
+  .btn-green { background: rgba(16, 185, 129, 0.18); border-color: #10b981; color: #6ee7b7; }
+  .btn-active { background: rgba(34, 197, 94, 0.32) !important; border-color: #4ade80 !important; color: #fff !important; }
+
+  #viewportWrap { position: relative; flex: 1; width: 100%; overflow: hidden; touch-action: none; }
+  #viewGlCanvas { width: 100%; height: 100%; display: block; }
+  #emptyHint {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 8px;
+    pointer-events: none; color: #64748b; font-size: 13px; text-align: center; padding: 24px;
+  }
+
+  footer {
+    padding: 10px 12px 18px; display: flex; flex-direction: column; gap: 8px;
+    background: #080d18; border-top: 1px solid rgba(34, 197, 94, 0.2);
+  }
+  .footer-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+
+  /* 2. Окно ПНВ и 3D Скана */
+  #xrOverlay {
+    position: fixed; inset: 0; z-index: 100;
+    display: none; flex-direction: column; justify-content: space-between;
+    pointer-events: none; background: transparent;
+  }
+  .xr-top {
+    padding: 12px; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;
+    pointer-events: auto;
+  }
+  .xr-left-col { display: flex; flex-direction: column; gap: 6px; }
+  #xrMetaPill {
+    font-size: 11px; color: #86efac;
+    background: rgba(0, 18, 6, 0.85); border: 1px solid rgba(74, 222, 128, 0.35);
+    padding: 4px 8px; border-radius: 8px; align-self: flex-start;
+  }
+  .xr-reticle {
+    align-self: center; pointer-events: none;
+    display: flex; flex-direction: column; align-items: center; gap: 5px;
+  }
+  .reticle-ring {
+    width: 30px; height: 30px; border-radius: 50%;
+    border: 1.5px solid rgba(74, 222, 128, 0.65);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .reticle-dot { width: 4px; height: 4px; border-radius: 50%; background: #4ade80; }
+  #xrDist {
+    font-size: 12px; font-weight: 700; color: #4ade80;
+    background: rgba(0, 18, 0, 0.85); padding: 2px 8px; border-radius: 6px;
+    border: 1px solid rgba(74, 222, 128, 0.35);
+  }
+  .xr-bottom {
+    padding: 10px 12px 24px; pointer-events: auto;
+    background: linear-gradient(to top, rgba(0,0,0,0.94), rgba(0,0,0,0.5), transparent);
+    display: flex; flex-direction: column; gap: 9px;
+  }
+  .slider-row { display: flex; align-items: center; gap: 10px; font-size: 12px; color: #86efac; }
+  input[type="range"] {
+    flex: 1; height: 6px; border-radius: 99px; background: #14532d;
+    outline: none; -webkit-appearance: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 20px; height: 20px;
+    border-radius: 50%; background: #4ade80; cursor: pointer;
+  }
+  .xr-actions { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+
+  /* 3. ОТДЕЛЬНОЕ ОКНО: ЛАЗЕРНАЯ РУЛЕТКА */
+  #rulerOverlay {
+    position: fixed; inset: 0; z-index: 105;
+    display: none; flex-direction: column; justify-content: space-between;
+    pointer-events: none; background: transparent;
+  }
+  .ruler-top {
+    padding: 12px; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;
+    pointer-events: auto;
+  }
+  .ruler-info {
+    display: flex; flex-direction: column; gap: 4px; max-width: 72%;
+  }
+  #rulerLiveDist {
+    font-size: 14px; font-weight: 700; color: #fbbf24;
+    background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(251, 191, 36, 0.45);
+    padding: 5px 10px; border-radius: 10px; align-self: flex-start;
+  }
+  #rulerLogPill {
+    font-size: 11px; color: #e2e8f0;
+    background: rgba(15, 23, 42, 0.82); border: 1px solid rgba(148, 163, 184, 0.3);
+    padding: 4px 8px; border-radius: 8px;
+    max-height: 54px; overflow-y: auto; line-height: 1.35;
+    display: none;
+  }
+  .ruler-center-hint {
+    align-self: center; pointer-events: none;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+  }
+  .ruler-crosshair {
+    width: 44px; height: 44px; border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.85);
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.7);
+    display: flex; align-items: center; justify-content: center;
+    transition: border-color 0.15s, transform 0.15s;
+  }
+  .ruler-crosshair.locked {
+    border-color: #fbbf24;
+    transform: scale(0.92);
+  }
+  .ruler-crosshair-dot {
+    width: 6px; height: 6px; border-radius: 50%; background: #fbbf24;
+  }
+  #rulerAimStatus {
+    font-size: 11px; color: #fff; background: rgba(0,0,0,0.65);
+    padding: 2px 8px; border-radius: 6px;
+  }
+  .ruler-bottom {
+    padding: 12px 14px 28px; pointer-events: auto;
+    background: linear-gradient(to top, rgba(0,0,0,0.88), rgba(0,0,0,0.35), transparent);
+    display: flex; flex-direction: column; gap: 12px; align-items: center;
+  }
+  .ruler-main-row {
+    width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  }
+  #btnAddPoint {
+    width: 68px; height: 68px; border-radius: 50%;
+    background: #fbbf24; border: 4px solid #fff; color: #1c1917;
+    font-size: 28px; font-weight: 800; padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
+  }
+  #btnAddPoint:disabled {
+    background: #475569; border-color: #94a3b8; color: #cbd5e1; opacity: 0.7;
+  }
+  .ruler-side-btns {
+    display: flex; gap: 6px;
+  }
+  #toast {
+    position: fixed; top: 70px; left: 50%; transform: translateX(-50%);
+    z-index: 200; background: rgba(16, 185, 129, 0.95); color: #022c22;
+    font-weight: 700; font-size: 12px; padding: 7px 14px; border-radius: 99px;
+    display: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+  <canvas id="xrGlCanvas"></canvas>
+  <canvas id="ruler2DCanvas"></canvas>
+  <div id="toast">Скопировано</div>
+
+  <!-- 1. Главный экран -->
+  <div id="viewerScreen">
+    <header>
+      <div class="btn-row">
+        <button type="button" id="btnOpenRuler" class="btn-ruler">📏 Рулетка</button>
+        <button type="button" id="btnStartNV" class="btn-primary">👁 ПНВ</button>
+        <button type="button" id="btnStartRoom" class="btn-green">🏠 Скан</button>
+      </div>
+      <div class="btn-row">
+        <button type="button" id="btnTopView">🗺</button>
+        <button type="button" id="btnResetView">🎯</button>
+        <button type="button" id="btnClearAll">🗑</button>
+      </div>
+    </header>
+
+    <div id="viewportWrap">
+      <canvas id="viewGlCanvas"></canvas>
+      <div id="emptyHint">
+        <div style="font-size:15px; color:#cbd5e1; font-weight:600;">LiDAR Студия</div>
+        <div>📏 Рулетка — замер расстояний в 3D<br>👁 ПНВ / 🏠 Скан — облако точек (в XRViewer)</div>
+      </div>
+    </div>
+
+    <footer class="mono">
+      <div class="slider-row">
+        <span>Срез верха:</span>
+        <input type="range" id="sliderClipY" min="-0.5" max="3.5" step="0.1" value="3.5">
+        <strong id="clipYVal" style="width:44px; text-align:right;">Выкл</strong>
+      </div>
+      <div class="footer-row">
+        <div class="btn-row">
+          <button type="button" id="btnViewModeNV">ПНВ</button>
+          <button type="button" id="btnViewModeTherm">Тепло</button>
+          <button type="button" id="btnViewModeRoom" class="btn-active">Высота</button>
+        </div>
+        <div class="btn-row">
+          <button type="button" id="btnExportOBJ">.OBJ</button>
+          <button type="button" id="btnExportPLY">.PLY</button>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- 2. Окно ПНВ / 3D Скан -->
+  <div id="xrOverlay">
+    <div class="xr-top">
+      <div class="xr-left-col">
+        <div class="btn-row">
+          <button type="button" id="btnXrModeNV" class="btn-active">👁 ПНВ</button>
+          <button type="button" id="btnXrModeScan">🏠 Скан</button>
+        </div>
+        <div id="xrMetaPill" class="mono">Точек: 0</div>
+      </div>
+      <button type="button" id="btnExitXR" style="background:#7f1d1d; border-color:#ef4444;">Готово</button>
+    </div>
+
+    <div class="xr-reticle mono">
+      <div class="reticle-ring"><div class="reticle-dot"></div></div>
+      <div id="xrDist">— м</div>
+    </div>
+
+    <div class="xr-bottom mono">
+      <div class="slider-row">
+        <span>Дальность:</span>
+        <input type="range" id="sliderRange" min="0.8" max="6.0" step="0.2" value="4.0">
+        <strong id="rangeVal" style="width:44px; text-align:right;">4.0 м</strong>
+      </div>
+      <div class="xr-actions">
+        <button type="button" id="btnPause">⏸ Пауза</button>
+        <button type="button" id="btnPalSwitch">🎨 ПНВ</button>
+        <button type="button" id="btnBgMode">📷 Чёрный</button>
+        <button type="button" id="btnClearXR">🗑</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. ОТДЕЛЬНОЕ ОКНО: ЛАЗЕРНАЯ РУЛЕТКА -->
+  <div id="rulerOverlay">
+    <div class="ruler-top">
+      <div class="ruler-info mono">
+        <div id="rulerLiveDist">До цели: — м</div>
+        <div id="rulerLogPill"></div>
+      </div>
+      <button type="button" id="btnExitRuler" style="background:#7f1d1d; border-color:#ef4444;">✕ Закрыть</button>
+    </div>
+
+    <div class="ruler-center-hint mono">
+      <div class="ruler-crosshair" id="rulerCrosshair">
+        <div class="ruler-crosshair-dot"></div>
+      </div>
+      <div id="rulerAimStatus">Наведите на поверхность</div>
+    </div>
+
+    <div class="ruler-bottom">
+      <div class="ruler-main-row">
+        <div class="ruler-side-btns">
+          <button type="button" id="btnRulerUndo" title="Отменить точку">↩</button>
+          <button type="button" id="btnRulerNewLine" title="Новая отдельная линия">✂ Разрыв</button>
+        </div>
+
+        <button type="button" id="btnAddPoint" disabled>+</button>
+
+        <div class="ruler-side-btns">
+          <button type="button" id="btnRulerCopy" title="Копировать замеры">📋</button>
+          <button type="button" id="btnRulerClear" title="Очистить всё">🗑</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function() {
+  const MAX_SCAN = 20000;
+  const MAX_NV   = 3000;
+  const VOXEL    = 0.04;
+
+  const scanPos = new Float32Array(MAX_SCAN * 3);
+  const nvPos   = new Float32Array(MAX_NV * 3);
+  const voxelSet = new Set();
+
+  const state = {
+    xrKind: 'scan',      // 'scan' (ПНВ/Скан) | 'ruler' (Лазерная рулетка)
+    mode: 'nv',          // 'nv' | 'scan'
+    scanCount: 0,
+    nvCount: 0,
+    nvHead: 0,
+    dirtyGPU: false,
+    xrSession: null,
+    isPaused: false,
+    showCameraBg: false,
+    colorMode: 0,
+    viewColorMode: 2,
+    maxRange: 4.0,
+    clipY: 3.5,
+    lastCamPos: null,
+    yaw: 0.5, pitch: 0.45, zoom: 4.2,
+    cx: 0, cy: 0, cz: 0,
+
+    // Состояние Лазерной рулетки
+    rulerHit: null,          // { x, y, z, dist }
+    rulerLastHitTime: 0,
+    rulerChains: [[]],       // Массив цепочек точек: [[p0, p1, p2], [p3, p4]]
+  };
+
+  // =========================================================
+  // МАТЕМАТИКА МАТРИЦ (ТОЧНАЯ ИНВЕРСИЯ ДЛЯ IOS XRVIEWER)
+  // =========================================================
+  const tmpInvMat = new Float32Array(16);
+  function computeRigidInverse(m, out) {
+    // Транспонируем 3x3 поворот
+    out[0] = m[0]; out[1] = m[4]; out[2]  = m[8];  out[3]  = 0;
+    out[4] = m[1]; out[5] = m[5]; out[6]  = m[9];  out[7]  = 0;
+    out[8] = m[2]; out[9] = m[6]; out[10] = m[10]; out[11] = 0;
+    const tx = m[12], ty = m[13], tz = m[14];
+    out[12] = -(m[0] * tx + m[1] * ty + m[2] * tz);
+    out[13] = -(m[4] * tx + m[5] * ty + m[6] * tz);
+    out[14] = -(m[8] * tx + m[9] * ty + m[10] * tz);
+    out[15] = 1;
+    return out;
+  }
+
+  function projectToScreen(wx, wy, wz, viewMat, projMat, w, h) {
+    const vx = viewMat[0] * wx + viewMat[4] * wy + viewMat[8] * wz + viewMat[12];
+    const vy = viewMat[1] * wx + viewMat[5] * wy + viewMat[9] * wz + viewMat[13];
+    const vz = viewMat[2] * wx + viewMat[6] * wy + viewMat[10] * wz + viewMat[14];
+    if (vz >= -0.05) return null;
+
+    const cx = projMat[0] * vx + projMat[4] * vy + projMat[8] * vz + projMat[12];
+    const cy = projMat[1] * vx + projMat[5] * vy + projMat[9] * vz + projMat[13];
+    const cw = projMat[3] * vx + projMat[7] * vy + projMat[11] * vz + projMat[15];
+    if (cw <= 0.0001) return null;
+
+    return {
+      x: (cx / cw * 0.5 + 0.5) * w,
+      y: (0.5 - cy / cw * 0.5) * h
+    };
+  }
+
+  function formatDist(meters) {
+    if (meters < 1.0) return (meters * 100).toFixed(1) + ' см';
+    return meters.toFixed(2) + ' м (' + Math.round(meters * 100) + ' см)';
+  }
+
+  function formatShortDist(meters) {
+    if (meters < 1.0) return (meters * 100).toFixed(1) + ' см';
+    return meters.toFixed(2) + ' м';
+  }
+
+  // =========================================================
+  // WEBGL ШЕЙДЕРЫ ДЛЯ ПНВ И 3D СКАНА
+  // =========================================================
+  const VS_SRC = `
+    attribute vec3 aPos;
+    uniform mat4 uView;
+    uniform mat4 uProj;
+    uniform vec3 uCamPos;
+    uniform float uMaxRange;
+    uniform float uClipY;
+    uniform float uPointScale;
+    uniform int uColorMode;
+    varying vec3 vColor;
+    varying float vAlpha;
+
+    void main() {
+      if (aPos.y > uClipY) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        gl_PointSize = 0.0;
+        vAlpha = 0.0;
+        return;
+      }
+      float dist = length(aPos - uCamPos);
+      if (dist > uMaxRange) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        gl_PointSize = 0.0;
+        vAlpha = 0.0;
+        return;
+      }
+      vec4 vp = uView * vec4(aPos, 1.0);
+      gl_Position = uProj * vp;
+      float depth = max(0.25, -vp.z);
+      gl_PointSize = clamp(uPointScale / depth, 3.0, 14.0);
+
+      float near = clamp(1.0 - dist / uMaxRange, 0.0, 1.0);
+      vec3 col;
+      if (uColorMode == 0) {
+        col = mix(vec3(0.02, 0.30, 0.08), vec3(0.25, 1.0, 0.45), near);
+        if (near > 0.78) col = mix(col, vec3(0.85, 1.0, 0.9), (near - 0.78) / 0.22);
+      } else if (uColorMode == 1) {
+        float t = 1.0 - near;
+        if (t < 0.5) col = mix(vec3(1.0, 0.2, 0.1), vec3(1.0, 0.85, 0.1), t * 2.0);
+        else col = mix(vec3(0.1, 0.9, 0.55), vec3(0.1, 0.4, 0.95), (t - 0.5) * 2.0);
+      } else {
+        float h = clamp((aPos.y + 1.3) / 2.6, 0.0, 1.0);
+        col = h < 0.5
+          ? mix(vec3(0.1, 0.55, 0.95), vec3(0.12, 0.92, 0.62), h * 2.0)
+          : mix(vec3(0.12, 0.92, 0.62), vec3(0.98, 0.68, 0.18), (h - 0.5) * 2.0);
+      }
+      vColor = col;
+      vAlpha = 0.4 + 0.6 * near;
+    }
+  `;
+
+  const FS_SRC = `
+    precision mediump float;
+    varying vec3 vColor;
+    varying float vAlpha;
+    void main() {
+      vec2 p = gl_PointCoord - vec2(0.5);
+      if (dot(p, p) > 0.25) discard;
+      gl_FragColor = vec4(vColor, vAlpha);
+    }
+  `;
+
+  function createGL(canvas, xrCompat) {
+    const gl = canvas.getContext('webgl', {
+      alpha: true, antialias: false, depth: true,
+      powerPreference: 'low-power', xrCompatible: !!xrCompat
+    });
+    if (!gl) return null;
+    function comp(t, s) {
+      const sh = gl.createShader(t);
+      gl.shaderSource(sh, s);
+      gl.compileShader(sh);
+      return sh;
+    }
+    const prog = gl.createProgram();
+    gl.attachShader(prog, comp(gl.VERTEX_SHADER, VS_SRC));
+    gl.attachShader(prog, comp(gl.FRAGMENT_SHADER, FS_SRC));
+    gl.linkProgram(prog);
+
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, scanPos.byteLength, gl.DYNAMIC_DRAW);
+
+    return {
+      gl, prog, buf,
+      locPos: gl.getAttribLocation(prog, 'aPos'),
+      uView: gl.getUniformLocation(prog, 'uView'),
+      uProj: gl.getUniformLocation(prog, 'uProj'),
+      uCamPos: gl.getUniformLocation(prog, 'uCamPos'),
+      uMaxRange: gl.getUniformLocation(prog, 'uMaxRange'),
+      uClipY: gl.getUniformLocation(prog, 'uClipY'),
+      uPointScale: gl.getUniformLocation(prog, 'uPointScale'),
+      uColorMode: gl.getUniformLocation(prog, 'uColorMode')
+    };
+  }
+
+  const rays = [];
+  for (let gy = -1; gy <= 1; gy++) {
+    for (let gx = -1; gx <= 1; gx++) {
+      const rx = gx * 0.22, ry = gy * 0.26;
+      const l = Math.hypot(rx, ry, -1);
+      rays.push({ dx: rx / l, dy: ry / l, dz: -1 / l, rawX: rx, rawY: ry, center: (gx === 0 && gy === 0) });
+    }
+  }
+
+  function addPoint(x, y, z, dist) {
+    if (state.isPaused || dist < 0.15 || dist > state.maxRange) return;
+    if (state.mode === 'nv') {
+      const i = state.nvHead * 3;
+      nvPos[i] = x; nvPos[i + 1] = y; nvPos[i + 2] = z;
+      state.nvHead = (state.nvHead + 1) % MAX_NV;
+      if (state.nvCount < MAX_NV) state.nvCount++;
+      state.dirtyGPU = true;
+    } else {
+      if (state.scanCount >= MAX_SCAN) return;
+      const vx = Math.floor(x / VOXEL) + 512;
+      const vy = Math.floor(y / VOXEL) + 512;
+      const vz = Math.floor(z / VOXEL) + 512;
+      if (vx < 0 || vx > 1023 || vy < 0 || vy > 1023 || vz < 0 || vz > 1023) return;
+      const key = vx + vy * 1024 + vz * 1048576;
+      if (!voxelSet.has(key)) {
+        voxelSet.add(key);
+        const i = state.scanCount * 3;
+        scanPos[i] = x; scanPos[i + 1] = y; scanPos[i + 2] = z;
+        state.scanCount++;
+        state.dirtyGPU = true;
+      }
+    }
+  }
+
+  // =========================================================
+  // XR СЕССИЯ (ОБЩАЯ ДЛЯ РУЛЕТКИ И ПНВ/СКАНА)
+  // =========================================================
+  const xrCanvas = document.getElementById('xrGlCanvas');
+  const rulerCanvas = document.getElementById('ruler2DCanvas');
+  const rCtx = rulerCanvas.getContext('2d');
+  const xrMetaPill = document.getElementById('xrMetaPill');
+  const xrDistEl = document.getElementById('xrDist');
+  const emptyHint = document.getElementById('emptyHint');
+
+  const rulerLiveDist = document.getElementById('rulerLiveDist');
+  const rulerLogPill = document.getElementById('rulerLogPill');
+  const rulerCrosshair = document.getElementById('rulerCrosshair');
+  const rulerAimStatus = document.getElementById('rulerAimStatus');
+  const btnAddPoint = document.getElementById('btnAddPoint');
+
+  let xrCtx = null;
+  let refSpace = null;
+  let hitSources = [];
+  let centerHitSource = null;
+  let pendingLegacy = false;
+  let rayCursor = 0;
+
+  async function startXRSession(kind, subMode) {
+    if (!navigator.xr) {
+      alert('Откройте файл в браузере XRViewer.');
+      return;
+    }
+
+    state.xrKind = kind; // 'ruler' | 'scan'
+    if (kind === 'scan') {
+      state.mode = subMode;
+      state.colorMode = (subMode === 'nv') ? 0 : 2;
+      state.isPaused = false;
+      updateXrUI();
+    } else {
+      state.rulerHit = null;
+      state.rulerLastHitTime = 0;
+      btnAddPoint.disabled = true;
+      rulerCrosshair.classList.remove('locked');
+      rulerAimStatus.textContent = 'Наведите на поверхность';
+      rulerLiveDist.textContent = 'До цели: — м';
+      updateRulerLog();
+    }
+
+    state.lastCamPos = null;
+    pendingLegacy = false;
+
+    const overlayRoot = (kind === 'ruler')
+      ? document.getElementById('rulerOverlay')
+      : document.getElementById('xrOverlay');
+
+    try {
+      let session;
+      try {
+        session = await navigator.xr.requestSession('immersive-ar', {
+          optionalFeatures: ['hit-test', 'dom-overlay'],
+          domOverlay: { root: overlayRoot }
+        });
+      } catch {
+        session = await navigator.xr.requestSession('immersive-ar', { optionalFeatures: ['hit-test'] });
+      }
+
+      state.xrSession = session;
+      document.body.classList.add('xr-active');
+      document.body.classList.toggle('xr-mode-ruler', kind === 'ruler');
+      document.body.classList.toggle('xr-mode-scan', kind === 'scan');
+      applyBg();
+
+      if (!xrCtx) xrCtx = createGL(xrCanvas, true);
+      if (xrCtx && typeof XRWebGLLayer !== 'undefined') {
+        session.updateRenderState({ baseLayer: new XRWebGLLayer(session, xrCtx.gl) });
+      }
+
+      refSpace = await session.requestReferenceSpace('local')
+        .catch(() => session.requestReferenceSpace('viewer'));
+      const viewerSpace = await session.requestReferenceSpace('viewer').catch(() => null);
+
+      hitSources = [];
+      centerHitSource = null;
+      if (viewerSpace && session.requestHitTestSource) {
+        if (kind === 'ruler') {
+          centerHitSource = await session.requestHitTestSource({ space: viewerSpace }).catch(() => null);
+        } else {
+          const hasRay = (typeof XRRay !== 'undefined');
+          for (let i = 0; i < rays.length; i++) {
+            const r = rays[i];
+            try {
+              const opts = { space: viewerSpace };
+              if (hasRay && !r.center) opts.offsetRay = new XRRay({ x: 0, y: 0, z: 0 }, { x: r.dx, y: r.dy, z: r.dz });
+              else if (!hasRay && !r.center) continue;
+              const src = await session.requestHitTestSource(opts);
+              hitSources.push({ src, center: r.center });
+            } catch {}
+          }
+        }
+      }
+
+      session.addEventListener('end', () => {
+        state.xrSession = null;
+        hitSources = [];
+        centerHitSource = null;
+        pendingLegacy = false;
+        document.body.classList.remove('xr-active', 'xr-mode-ruler', 'xr-mode-scan');
+        if (state.scanCount > 0) {
+          computeCenter();
+          emptyHint.style.display = 'none';
+          state.dirtyGPU = true;
+        }
+      });
+
+      session.requestAnimationFrame(onXRFrame);
+    } catch (e) {
+      alert('Ошибка AR: ' + e.message);
+    }
+  }
+
+  function updateRulerHit(hx, hy, hz, dist, now) {
+    if (dist < 0.08 || dist > 12.0) return;
+    if (state.rulerHit && Math.hypot(hx - state.rulerHit.x, hy - state.rulerHit.y, hz - state.rulerHit.z) < 0.05) {
+      // Лёгкое сглаживание, чтобы точка не дрожала
+      state.rulerHit.x = state.rulerHit.x * 0.65 + hx * 0.35;
+      state.rulerHit.y = state.rulerHit.y * 0.65 + hy * 0.35;
+      state.rulerHit.z = state.rulerHit.z * 0.65 + hz * 0.35;
+      state.rulerHit.dist = state.rulerHit.dist * 0.65 + dist * 0.35;
+    } else {
+      state.rulerHit = { x: hx, y: hy, z: hz, dist };
+    }
+    state.rulerLastHitTime = now;
+  }
+
+  function onXRFrame(now, frame) {
+    const session = state.xrSession;
+    if (!session || !xrCtx) return;
+    session.requestAnimationFrame(onXRFrame);
+
+    const { gl } = xrCtx;
+    const layer = session.renderState.baseLayer;
+    if (layer) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+      gl.viewport(0, 0, layer.framebufferWidth, layer.framebufferHeight);
+    }
+
+    const transparentBg = (state.xrKind === 'ruler') || state.showCameraBg;
+    gl.clearColor(0, 0, 0, transparentBg ? 0 : 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    const pose = frame.getViewerPose(refSpace);
+    if (!pose || !pose.views || !pose.views.length) return;
+
+    const cam = pose.transform.position;
+    const view = pose.views[0];
+    // Надёжная ручная инверсия матрицы вида (исключает баг полифилла XRViewer)
+    const viewMat = computeRigidInverse(view.transform.matrix, tmpInvMat);
+    const projMat = view.projectionMatrix;
+
+    // =======================================================
+    // ВЕТКА 1: ЛАЗЕРНАЯ РУЛЕТКА (ОТДЕЛЬНОЕ ОКНО)
+    // =======================================================
+    if (state.xrKind === 'ruler') {
+      if (centerHitSource) {
+        try {
+          const res = frame.getHitTestResults(centerHitSource);
+          if (res.length > 0) {
+            const p = res[0].getPose(refSpace).transform.position;
+            const d = Math.hypot(p.x - cam.x, p.y - cam.y, p.z - cam.z);
+            updateRulerHit(p.x, p.y, p.z, d, now);
+          }
+        } catch {}
+      } else if (typeof session.requestHitTest === 'function' && !pendingLegacy) {
+        pendingLegacy = true;
+        const m = view.transform.matrix;
+        const origin = new Float32Array([cam.x, cam.y, cam.z]);
+        const dir = new Float32Array([-m[8], -m[9], -m[10]]);
+        const sentAt = performance.now();
+        session.requestHitTest(origin, dir, refSpace).then(hits => {
+          if (performance.now() - sentAt > 150) return;
+          if (hits && hits.length > 0 && hits[0].hitMatrix) {
+            const hm = hits[0].hitMatrix;
+            const d = Math.hypot(hm[12] - cam.x, hm[13] - cam.y, hm[14] - cam.z);
+            updateRulerHit(hm[12], hm[13], hm[14], d, performance.now());
+          }
+        }).catch(() => {}).finally(() => { pendingLegacy = false; });
+      }
+
+      const hitFresh = state.rulerHit && (now - state.rulerLastHitTime < 450);
+      btnAddPoint.disabled = !hitFresh;
+      rulerCrosshair.classList.toggle('locked', !!hitFresh);
+
+      if (hitFresh) {
+        rulerLiveDist.textContent = 'До цели: ' + formatDist(state.rulerHit.dist);
+        const curChain = state.rulerChains[state.rulerChains.length - 1];
+        if (curChain.length > 0) {
+          const last = curChain[curChain.length - 1];
+          const segLen = Math.hypot(
+            state.rulerHit.x - last.x,
+            state.rulerHit.y - last.y,
+            state.rulerHit.z - last.z
+          );
+          rulerAimStatus.textContent = 'Отрезок: ' + formatDist(segLen);
+        } else {
+          rulerAimStatus.textContent = 'Нажмите + для старта';
+        }
+      } else {
+        rulerLiveDist.textContent = 'До цели: поиск...';
+        rulerAimStatus.textContent = 'Наведите на поверхность';
+      }
+
+      renderRuler2D(viewMat, projMat, hitFresh ? state.rulerHit : null);
+      return;
+    }
+
+    // =======================================================
+    // ВЕТКА 2: ПНВ / 3D СКАН
+    // =======================================================
+    let jumped = false;
+    if (state.lastCamPos) {
+      if (Math.hypot(cam.x - state.lastCamPos.x, cam.y - state.lastCamPos.y, cam.z - state.lastCamPos.z) > 0.35) {
+        jumped = true;
+      }
+    }
+    state.lastCamPos = { x: cam.x, y: cam.y, z: cam.z };
+
+    if (!jumped && !state.isPaused) {
+      if (hitSources.length > 0) {
+        for (let i = 0; i < hitSources.length; i++) {
+          try {
+            const res = frame.getHitTestResults(hitSources[i].src);
+            if (res.length > 0) {
+              const p = res[0].getPose(refSpace).transform.position;
+              const d = Math.hypot(p.x - cam.x, p.y - cam.y, p.z - cam.z);
+              if (hitSources[i].center) xrDistEl.textContent = d.toFixed(2) + ' м';
+              addPoint(p.x, p.y, p.z, d);
+            }
+          } catch {}
+        }
+      } else if (typeof session.requestHitTest === 'function' && !pendingLegacy) {
+        pendingLegacy = true;
+        const m = view.transform.matrix;
+        const origin = new Float32Array([cam.x, cam.y, cam.z]);
+        const sentAt = performance.now();
+        const tasks = [];
+
+        for (let k = 0; k < 3; k++) {
+          const r = rays[rayCursor % rays.length];
+          rayCursor++;
+          const wx = m[0] * r.rawX + m[4] * r.rawY - m[8];
+          const wy = m[1] * r.rawX + m[5] * r.rawY - m[9];
+          const wz = m[2] * r.rawX + m[6] * r.rawY - m[10];
+          const len = Math.hypot(wx, wy, wz) || 1;
+          const dir = new Float32Array([wx / len, wy / len, wz / len]);
+
+          tasks.push(
+            session.requestHitTest(origin, dir, refSpace).then(hits => {
+              if (performance.now() - sentAt > 150) return;
+              if (hits && hits.length > 0 && hits[0].hitMatrix) {
+                const hm = hits[0].hitMatrix;
+                const d = Math.hypot(hm[12] - cam.x, hm[13] - cam.y, hm[14] - cam.z);
+                if (r.center) xrDistEl.textContent = d.toFixed(2) + ' м';
+                addPoint(hm[12], hm[13], hm[14], d);
+              }
+            }).catch(() => {})
+          );
+        }
+        Promise.all(tasks).finally(() => { pendingLegacy = false; });
+      }
+    }
+
+    const activeArr = (state.mode === 'nv') ? nvPos : scanPos;
+    const count = (state.mode === 'nv') ? state.nvCount : state.scanCount;
+
+    if (count > 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, xrCtx.buf);
+      if (state.dirtyGPU) {
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, activeArr.subarray(0, count * 3));
+        state.dirtyGPU = false;
+      }
+
+      gl.enable(gl.DEPTH_TEST);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+      gl.useProgram(xrCtx.prog);
+      gl.enableVertexAttribArray(xrCtx.locPos);
+      gl.vertexAttribPointer(xrCtx.locPos, 3, gl.FLOAT, false, 0, 0);
+
+      gl.uniformMatrix4fv(xrCtx.uView, false, viewMat);
+      gl.uniformMatrix4fv(xrCtx.uProj, false, projMat);
+      gl.uniform3f(xrCtx.uCamPos, cam.x, cam.y, cam.z);
+      gl.uniform1f(xrCtx.uMaxRange, state.maxRange);
+      gl.uniform1f(xrCtx.uClipY, 99.0);
+      gl.uniform1f(xrCtx.uPointScale, 20.0);
+      gl.uniform1i(xrCtx.uColorMode, state.colorMode);
+
+      gl.drawArrays(gl.POINTS, 0, count);
+    }
+
+    xrMetaPill.textContent = (state.mode === 'nv' ? 'ПНВ: ' : 'Скан: ') + count;
+  }
+
+  // =========================================================
+  // ОТРИСОВКА 3D-ЛИНИЙ И ПОДПИСЕЙ РУЛЕТКИ ПОВЕРХ КАМЕРЫ
+  // =========================================================
+  function drawLabelPill(x, y, text, isLive) {
+    rCtx.font = 'bold 13px ui-monospace, Menlo, monospace';
+    const tw = rCtx.measureText(text).width;
+    const pw = tw + 14, ph = 24;
+    rCtx.fillStyle = isLive ? 'rgba(245, 158, 11, 0.92)' : 'rgba(15, 23, 42, 0.88)';
+    rCtx.strokeStyle = isLive ? '#fff' : '#fbbf24';
+    rCtx.lineWidth = 1.5;
+    rCtx.beginPath();
+    rCtx.roundRect(x - pw / 2, y - ph / 2, pw, ph, 8);
+    rCtx.fill();
+    rCtx.stroke();
+
+    rCtx.fillStyle = isLive ? '#1c1917' : '#fff';
+    rCtx.textAlign = 'center';
+    rCtx.textBaseline = 'middle';
+    rCtx.fillText(text, x, y + 0.5);
+  }
+
+  function renderRuler2D(viewMat, projMat, liveHit) {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = window.innerWidth, h = window.innerHeight;
+    if (rulerCanvas.width !== Math.floor(w * dpr) || rulerCanvas.height !== Math.floor(h * dpr)) {
+      rulerCanvas.width = Math.floor(w * dpr);
+      rulerCanvas.height = Math.floor(h * dpr);
+    }
+    rCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    rCtx.clearRect(0, 0, w, h);
+
+    // 1. Отрисовка всех зафиксированных цепочек и отрезков
+    for (let c = 0; c < state.rulerChains.length; c++) {
+      const chain = state.rulerChains[c];
+      for (let i = 0; i < chain.length; i++) {
+        const pt = chain[i];
+        const sp = projectToScreen(pt.x, pt.y, pt.z, viewMat, projMat, w, h);
+
+        if (i > 0) {
+          const prev = chain[i - 1];
+          const spPrev = projectToScreen(prev.x, prev.y, prev.z, viewMat, projMat, w, h);
+          if (sp && spPrev) {
+            rCtx.strokeStyle = '#fbbf24';
+            rCtx.lineWidth = 3;
+            rCtx.setLineDash([]);
+            rCtx.beginPath();
+            rCtx.moveTo(spPrev.x, spPrev.y);
+            rCtx.lineTo(sp.x, sp.y);
+            rCtx.stroke();
+
+            const dist = Math.hypot(pt.x - prev.x, pt.y - prev.y, pt.z - prev.z);
+            drawLabelPill((spPrev.x + sp.x) * 0.5, (spPrev.y + sp.y) * 0.5 - 16, formatShortDist(dist), false);
+          }
+        }
+
+        if (sp) {
+          rCtx.fillStyle = '#fff';
+          rCtx.strokeStyle = '#f59e0b';
+          rCtx.lineWidth = 2.5;
+          rCtx.beginPath();
+          rCtx.arc(sp.x, sp.y, 6, 0, Math.PI * 2);
+          rCtx.fill();
+          rCtx.stroke();
+        }
+      }
+    }
+
+    // 2. Живая "резиновая" линия от последней поставленной точки к текущему прицелу
+    const activeChain = state.rulerChains[state.rulerChains.length - 1];
+    if (liveHit && activeChain.length > 0) {
+      const last = activeChain[activeChain.length - 1];
+      const spA = projectToScreen(last.x, last.y, last.z, viewMat, projMat, w, h);
+      const spB = projectToScreen(liveHit.x, liveHit.y, liveHit.z, viewMat, projMat, w, h);
+      if (spA && spB) {
+        rCtx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+        rCtx.lineWidth = 2.5;
+        rCtx.setLineDash([7, 5]);
+        rCtx.beginPath();
+        rCtx.moveTo(spA.x, spA.y);
+        rCtx.lineTo(spB.x, spB.y);
+        rCtx.stroke();
+        rCtx.setLineDash([]);
+
+        const dist = Math.hypot(liveHit.x - last.x, liveHit.y - last.y, liveHit.z - last.z);
+        drawLabelPill((spA.x + spB.x) * 0.5, (spA.y + spB.y) * 0.5 - 16, formatShortDist(dist), true);
+      }
+    }
+  }
+
+  function updateRulerLog() {
+    const segs = [];
+    let total = 0;
+    let idx = 1;
+    for (let c = 0; c < state.rulerChains.length; c++) {
+      const ch = state.rulerChains[c];
+      for (let i = 1; i < ch.length; i++) {
+        const d = Math.hypot(ch[i].x - ch[i - 1].x, ch[i].y - ch[i - 1].y, ch[i].z - ch[i - 1].z);
+        total += d;
+        segs.push('#' + (idx++) + ': ' + formatShortDist(d));
+      }
+    }
+    if (segs.length === 0) {
+      rulerLogPill.style.display = 'none';
+      rulerLogPill.textContent = '';
+    } else {
+      rulerLogPill.style.display = 'block';
+      rulerLogPill.textContent = segs.join(' | ') + (segs.length > 1 ? ' • Сумма: ' + formatShortDist(total) : '');
+    }
+  }
+
+  // =========================================================
+  // 3D ПРОСМОТРЩИК (ГЛАВНЫЙ ЭКРАН)
+  // =========================================================
+  const viewCanvas = document.getElementById('viewGlCanvas');
+  const viewCtx = createGL(viewCanvas, false);
+
+  function computeCenter() {
+    if (!state.scanCount) return;
+    let cx = 0, cy = 0, cz = 0;
+    for (let i = 0; i < state.scanCount; i++) {
+      cx += scanPos[i * 3]; cy += scanPos[i * 3 + 1]; cz += scanPos[i * 3 + 2];
+    }
+    state.cx = cx / state.scanCount;
+    state.cy = cy / state.scanCount;
+    state.cz = cz / state.scanCount;
+  }
+
+  function makePersp(fov, asp, n, f) {
+    const t = 1 / Math.tan(fov / 2), nf = 1 / (n - f);
+    return new Float32Array([t / asp, 0, 0, 0, 0, t, 0, 0, 0, 0, (f + n) * nf, -1, 0, 0, 2 * f * n * nf, 0]);
+  }
+
+  function makeLookAt(ex, ey, ez, tx, ty, tz) {
+    let zx = ex - tx, zy = ey - ty, zz = ez - tz;
+    let zl = Math.hypot(zx, zy, zz) || 1; zx /= zl; zy /= zl; zz /= zl;
+    let xx = zz, xy = 0, xz = -zx;
+    let xl = Math.hypot(xx, xy, xz) || 1; xx /= xl; xy /= xl; xz /= xl;
+    const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+    return new Float32Array([
+      xx, yx, zx, 0, xy, yy, zy, 0, xz, yz, zz, 0,
+      -(xx * ex + xy * ey + xz * ez), -(yx * ex + yy * ey + yz * ez), -(zx * ex + zy * ey + zz * ez), 1
+    ]);
+  }
+
+  function renderViewer() {
+    requestAnimationFrame(renderViewer);
+    if (state.xrSession || !viewCtx) return;
+
+    const wrap = document.getElementById('viewportWrap');
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.floor((wrap.clientWidth || 360) * dpr);
+    const h = Math.floor((wrap.clientHeight || 500) * dpr);
+    if (viewCanvas.width !== w || viewCanvas.height !== h) {
+      viewCanvas.width = w; viewCanvas.height = h;
+    }
+
+    const { gl } = viewCtx;
+    gl.viewport(0, 0, w, h);
+    gl.clearColor(0.015, 0.025, 0.05, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    if (state.scanCount === 0) return;
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, viewCtx.buf);
+    if (state.dirtyGPU) {
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, scanPos.subarray(0, state.scanCount * 3));
+      state.dirtyGPU = false;
+    }
+
+    const ex = state.cx + Math.sin(state.yaw) * Math.cos(state.pitch) * state.zoom;
+    const ey = state.cy + Math.sin(state.pitch) * state.zoom;
+    const ez = state.cz + Math.cos(state.yaw) * Math.cos(state.pitch) * state.zoom;
+
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    gl.useProgram(viewCtx.prog);
+    gl.enableVertexAttribArray(viewCtx.locPos);
+    gl.vertexAttribPointer(viewCtx.locPos, 3, gl.FLOAT, false, 0, 0);
+
+    gl.uniformMatrix4fv(viewCtx.uView, false, makeLookAt(ex, ey, ez, state.cx, state.cy, state.cz));
+    gl.uniformMatrix4fv(viewCtx.uProj, false, makePersp(52 * Math.PI / 180, w / h, 0.05, 40));
+    gl.uniform3f(viewCtx.uCamPos, ex, ey, ez);
+    gl.uniform1f(viewCtx.uMaxRange, 20.0);
+    gl.uniform1f(viewCtx.uClipY, state.clipY >= 3.45 ? 99.0 : (state.cy + state.clipY));
+    gl.uniform1f(viewCtx.uPointScale, 24.0 * dpr);
+    gl.uniform1i(viewCtx.uColorMode, state.viewColorMode);
+
+    gl.drawArrays(gl.POINTS, 0, state.scanCount);
+  }
+  requestAnimationFrame(renderViewer);
+
+  // Вращение и зум в 3D-просмотрщике
+  const ptrs = new Map();
+  let lastPinch = null, lastOne = null;
+  const wrap = document.getElementById('viewportWrap');
+  wrap.addEventListener('pointerdown', e => {
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 1) { lastOne = { x: e.clientX, y: e.clientY }; lastPinch = null; }
+  });
+  wrap.addEventListener('pointermove', e => {
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 1 && lastOne) {
+      state.yaw -= (e.clientX - lastOne.x) * 0.008;
+      state.pitch = Math.max(-1.52, Math.min(1.52, state.pitch + (e.clientY - lastOne.y) * 0.008));
+      lastOne = { x: e.clientX, y: e.clientY };
+    } else if (ptrs.size === 2) {
+      const a = Array.from(ptrs.values());
+      const d = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+      if (lastPinch !== null) state.zoom = Math.max(0.6, Math.min(14, state.zoom - (d - lastPinch) * 0.015));
+      lastPinch = d;
+    }
+  });
+  function drop(e) {
+    ptrs.delete(e.pointerId);
+    if (ptrs.size < 2) lastPinch = null;
+    lastOne = ptrs.size === 1 ? Array.from(ptrs.values())[0] : null;
+  }
+  wrap.addEventListener('pointerup', drop);
+  wrap.addEventListener('pointercancel', drop);
+
+  // =========================================================
+  // КНОПКИ И ЭКСПОРТ
+  // =========================================================
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.display = 'block';
+    clearTimeout(window._tt);
+    window._tt = setTimeout(() => { t.style.display = 'none'; }, 1800);
+  }
+
+  const NL = String.fromCharCode(10);
+  function download(txt, name) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([txt], { type: 'text/plain' }));
+    a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  }
+
+  document.getElementById('btnExportOBJ').onclick = () => {
+    if (!state.scanCount) return;
+    const out = ['# LiDAR Scan'];
+    for (let i = 0; i < state.scanCount; i++) {
+      out.push('v ' + scanPos[i*3].toFixed(4) + ' ' + scanPos[i*3+1].toFixed(4) + ' ' + scanPos[i*3+2].toFixed(4));
+    }
+    download(out.join(NL), 'scan-' + Date.now() + '.obj');
+  };
+
+  document.getElementById('btnExportPLY').onclick = () => {
+    if (!state.scanCount) return;
+    const out = ['ply', 'format ascii 1.0', 'element vertex ' + state.scanCount, 'property float x', 'property float y', 'property float z', 'end_header'];
+    for (let i = 0; i < state.scanCount; i++) {
+      out.push(scanPos[i*3].toFixed(4) + ' ' + scanPos[i*3+1].toFixed(4) + ' ' + scanPos[i*3+2].toFixed(4));
+    }
+    download(out.join(NL), 'scan-' + Date.now() + '.ply');
+  };
+
+  const palNames = ['🎨 ПНВ', '🎨 Тепло', '🎨 Высота'];
+  function updateXrUI() {
+    document.getElementById('btnXrModeNV').classList.toggle('btn-active', state.mode === 'nv');
+    document.getElementById('btnXrModeScan').classList.toggle('btn-active', state.mode === 'scan');
+    document.getElementById('btnPalSwitch').textContent = palNames[state.colorMode];
+  }
+  function applyBg() {
+    const trans = (state.xrKind === 'ruler') || state.showCameraBg;
+    xrCanvas.style.background = trans ? 'transparent' : '#000000';
+    document.getElementById('btnBgMode').textContent = state.showCameraBg ? '📷 Камера' : '📷 Чёрный';
+  }
+  function clearAllScan() {
+    state.scanCount = 0; state.nvCount = 0; state.nvHead = 0;
+    voxelSet.clear(); state.dirtyGPU = true;
+    emptyHint.style.display = 'flex';
+  }
+
+  // Старт окон
+  document.getElementById('btnOpenRuler').onclick = () => startXRSession('ruler');
+  document.getElementById('btnStartNV').onclick = () => startXRSession('scan', 'nv');
+  document.getElementById('btnStartRoom').onclick = () => startXRSession('scan', 'scan');
+
+  // Кнопки окна Рулетки
+  document.getElementById('btnExitRuler').onclick = () => { if (state.xrSession) state.xrSession.end(); };
+
+  btnAddPoint.onclick = () => {
+    if (!state.rulerHit) return;
+    const ch = state.rulerChains[state.rulerChains.length - 1];
+    ch.push({ x: state.rulerHit.x, y: state.rulerHit.y, z: state.rulerHit.z });
+    updateRulerLog();
+  };
+
+  document.getElementById('btnRulerNewLine').onclick = () => {
+    const ch = state.rulerChains[state.rulerChains.length - 1];
+    if (ch.length > 0) {
+      state.rulerChains.push([]);
+      showToast('Новая линия');
+    }
+  };
+
+  document.getElementById('btnRulerUndo').onclick = () => {
+    while (state.rulerChains.length > 1 && state.rulerChains[state.rulerChains.length - 1].length === 0) {
+      state.rulerChains.pop();
+    }
+    const ch = state.rulerChains[state.rulerChains.length - 1];
+    if (ch.length > 0) ch.pop();
+    updateRulerLog();
+  };
+
+  document.getElementById('btnRulerClear').onclick = () => {
+    state.rulerChains = [[]];
+    updateRulerLog();
+    showToast('Замеры очищены');
+  };
+
+  document.getElementById('btnRulerCopy').onclick = () => {
+    const txt = rulerLogPill.textContent;
+    if (!txt) { showToast('Нет замеров'); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(() => showToast('Замеры скопированы')).catch(() => showToast(txt));
+    } else {
+      showToast('Скопируйте вручную из строки');
+    }
+  };
+
+  // Кнопки ПНВ / Скана
+  document.getElementById('btnXrModeNV').onclick = () => { state.mode = 'nv'; state.dirtyGPU = true; updateXrUI(); };
+  document.getElementById('btnXrModeScan').onclick = () => { state.mode = 'scan'; state.dirtyGPU = true; updateXrUI(); };
+  document.getElementById('btnExitXR').onclick = () => { if (state.xrSession) state.xrSession.end(); };
+  document.getElementById('btnPause').onclick = e => {
+    state.isPaused = !state.isPaused;
+    e.currentTarget.textContent = state.isPaused ? '▶ Пуск' : '⏸ Пауза';
+  };
+  document.getElementById('btnPalSwitch').onclick = () => {
+    state.colorMode = (state.colorMode + 1) % 3;
+    updateXrUI();
+  };
+  document.getElementById('btnBgMode').onclick = () => { state.showCameraBg = !state.showCameraBg; applyBg(); };
+  document.getElementById('btnClearXR').onclick = clearAllScan;
+  document.getElementById('btnClearAll').onclick = clearAllScan;
+
+  document.getElementById('btnTopView').onclick = () => { state.yaw = 0; state.pitch = 1.52; state.zoom = 6.0; };
+  document.getElementById('btnResetView').onclick = () => { state.yaw = 0.5; state.pitch = 0.45; state.zoom = 4.2; };
+  document.getElementById('btnViewModeNV').onclick = () => { state.viewColorMode = 0; setVPal(); };
+  document.getElementById('btnViewModeTherm').onclick = () => { state.viewColorMode = 1; setVPal(); };
+  document.getElementById('btnViewModeRoom').onclick = () => { state.viewColorMode = 2; setVPal(); };
+  function setVPal() {
+    document.getElementById('btnViewModeNV').classList.toggle('btn-active', state.viewColorMode === 0);
+    document.getElementById('btnViewModeTherm').classList.toggle('btn-active', state.viewColorMode === 1);
+    document.getElementById('btnViewModeRoom').classList.toggle('btn-active', state.viewColorMode === 2);
+  }
+
+  document.getElementById('sliderRange').oninput = e => {
+    state.maxRange = parseFloat(e.target.value);
+    document.getElementById('rangeVal').textContent = state.maxRange.toFixed(1) + ' м';
+  };
+  document.getElementById('sliderClipY').oninput = e => {
+    state.clipY = parseFloat(e.target.value);
+    document.getElementById('clipYVal').textContent = state.clipY >= 3.45 ? 'Выкл' : (state.clipY.toFixed(1) + ' м');
+  };
+})();
+</script>
+</body>
+</html>
